@@ -1,12 +1,14 @@
-# tests/test_file_parser.py
-
 from __future__ import annotations
 
+import sys
 import tempfile
 import urllib.request
 from pathlib import Path
 
 import pytest
+
+# Make project root importable
+sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from ingestion.file_parser import read_file
 from ingestion.file_parser.models import ReadResult

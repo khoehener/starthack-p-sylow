@@ -35,17 +35,22 @@ def _call_claude_for_parsing_plan(
     if not api_key:
         return None
 
-    client = anthropic.Anthropic(api_key=api_key)
-    prompt = _build_llm_prompt(file_profile)
-    chosen_model = model or os.getenv("CLAUDE_MODEL", "claude-sonnet-4-5")
+    try:
+        client = anthropic.Anthropic(api_key=api_key)
+        prompt = _build_llm_prompt(file_profile)
+        chosen_model = model or os.getenv("CLAUDE_MODEL", "claude-sonnet-4-5")
 
-    message = client.messages.create(
-        model=chosen_model,
-        max_tokens=600,
-        temperature=0,
-        messages=[{"role": "user", "content": prompt}],
-    )
-    text = _extract_text_from_claude_response(message)
+        message = client.messages.create(
+            model=chosen_model,
+            max_tokens=600,
+            temperature=0,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        text = _extract_text_from_claude_response(message)
+
+    except Exception as e:
+        print(f"[Claude ERROR] {type(e).__name__}: {e}")
+        return None
 
     if not text:
         return None
