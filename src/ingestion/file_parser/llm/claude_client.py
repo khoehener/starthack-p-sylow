@@ -29,16 +29,20 @@ def _call_claude_for_parsing_plan(
     model: str | None = None,
 ) -> ParsingPlan | None:
     if anthropic is None:
+        print("[Claude] anthropic not installed")
         return None
 
     api_key = os.getenv("ANTHROPIC_API_KEY")
     if not api_key:
+        print("[Claude] no API key found")
         return None
 
     try:
         client = anthropic.Anthropic(api_key=api_key)
         prompt = _build_llm_prompt(file_profile)
         chosen_model = model or os.getenv("CLAUDE_MODEL", "claude-sonnet-4-5")
+
+        print(f"[Claude] calling model: {chosen_model}")
 
         message = client.messages.create(
             model=chosen_model,
@@ -47,26 +51,39 @@ def _call_claude_for_parsing_plan(
             messages=[{"role": "user", "content": prompt}],
         )
         text = _extract_text_from_claude_response(message)
+        print(f"[Claude] raw response: {text[:300] if text else 'EMPTY'}")
 
     except Exception as e:
         print(f"[Claude ERROR] {type(e).__name__}: {e}")
         return None
 
     if not text:
+        print("[Claude] text was empty")
         return None
 
+    # Strip markdown code blocks if Claude wrapped the JSON
+    cleaned_text = text.strip()
+    if cleaned_text.startswith("```"):
+        lines = cleaned_text.splitlines()
+        # Remove first line (```json or ```) and last line (```)
+        cleaned_text = "\n".join(lines[1:-1]).strip()
+
     try:
-        payload = json.loads(text)
-    except json.JSONDecodeError:
+        payload = json.loads(cleaned_text)
+        print(f"[Claude] parsed payload: {payload}")
+    except json.JSONDecodeError as e:
+        print(f"[Claude] JSON parse error: {e}")
         return None
 
     strategy = payload.get("strategy")
+    print(f"[Claude] strategy: {strategy}")
     if strategy not in {
         "direct_csv",
         "direct_excel",
         "split_embedded_delimited_column",
         "drop_top_rows_then_parse",
     }:
+        print(f"[Claude] invalid strategy: {strategy}")
         return None
 
     delimiter = payload.get("delimiter")
