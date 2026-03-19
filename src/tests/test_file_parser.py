@@ -20,20 +20,24 @@ from data_sources import DATASETS, DATASETS_CLINIC, DATASETS_ERROR
 # ─────────────────────────────────────────
 
 def download_and_read(url: str) -> ReadResult:
-    """
-    Downloads a file from a URL into a temp file,
-    runs read_file on it, then cleans up.
-    """
-    suffix = Path(url).suffix  # gets .csv, .xlsx, .pdf etc.
-
+    suffix = Path(url).suffix
+    
     with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
         tmp_path = tmp.name
 
+    urllib.request.urlretrieve(url, tmp_path)
+    
     try:
-        urllib.request.urlretrieve(url, tmp_path)
         result = read_file(tmp_path)
     finally:
-        Path(tmp_path).unlink(missing_ok=True)
+        # On Windows we need to make sure all file handles are closed
+        # before attempting to delete
+        import gc
+        gc.collect()
+        try:
+            Path(tmp_path).unlink(missing_ok=True)
+        except PermissionError:
+            pass  # Windows still holding the handle, skip cleanup
 
     return result
 
