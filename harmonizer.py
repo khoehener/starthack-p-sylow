@@ -1,127 +1,333 @@
-# harmonizer.py
-"""
-Healthcare Data Harmonization Pipeline - Hackathon Edition
-Liest Daten von 4 Kliniken via GitHub, harmonisiert Schema und schreibt in SQLite.
-"""
+# src/harmonizer.py
+from __future__ import annotations
 
-import re
-import logging
+import json
+import os
 import sqlite3
-from pathlib import Path
-from dataclasses import dataclass, field
-from typing import Optional
+from typing import Any
+
+import anthropic
 import pandas as pd
 
-# ─────────────────────────── Konfiguration ────────────────────────────────────
 
-DB_PATH = Path("healthcare_unified.db")
-LOG_LEVEL = logging.INFO
-NULL_STRINGS = frozenset(["missing", "unknow", "unknown", "nan", "n/a", "na", "none", "-", ""])
+# ─────────────────────────────────────────
+# Step 1 - Ask Claude to map all columns
+# ─────────────────────────────────────────
 
-# ─────────────────────── Ziel-Schema Definition ────────────────────────────────
+def _build_mapping_prompt(dataframes: dict[str, pd.DataFrame]) -> str:
+    lines = [
+        "You are a healthcare data integration expert.",
+        "Map these dataframe columns to unified canonical snake_case English names.",
+        "Return ONLY valid JSON, no explanation.",
+        "",
+    ]
 
-TARGET_SCHEMAS: dict[str, list[str]] = {
-    "vitals": ["patient_id", "case_id", "timestamp", "source_clinic", "vital_type", "vital_value", "unit"],
-    "labs": ["patient_id", "case_id", "timestamp", "source_clinic", "lab_parameter", "lab_value", "unit", "reference_range"],
-    "medication": ["patient_id", "case_id", "timestamp", "source_clinic", "drug_name", "dose", "unit", "route"],
-    "nursing": ["patient_id", "case_id", "timestamp", "source_clinic", "nursing_note_free_text", "report_date", "shift"],
-    "device": ["patient_id", "timestamp", "source_clinic", "movement_index_0_100", "fall_event_0_1", "impact_magnitude_g"]
-}
+    for name, df in dataframes.items():
+        lines.append(f"{name}: {df.columns.tolist()}")
 
-# ─────────────────── Spalten-Mapping Dictionary ───────────────────────────────
+    lines += [
+        "",
+        "Return this exact JSON structure:",
+        '{"dataframe_roles": {"<df_name>": {"case_id_column": "<col or null>", "patient_id_column": "<col or null>", "data_type": "<core_cases|labs|medication|nursing|epa_assessment|motion|other>", "column_mapping": {"<original>": "<canonical or null>"}}}}',
+    ]
 
-COLUMN_MAPPING: dict[str, str] = {
-    "patient_id": "patient_id", "pat_id": "patient_id", "pid": "patient_id",
-    "case_id": "case_id", "fall_id": "case_id", "fallnummer": "case_id",
-    "timestamp": "timestamp", "zeit": "timestamp", "datetime": "timestamp", "messzeitpunkt": "timestamp",
-    "vital_type": "vital_type", "vitalparameter": "vital_type",
-    "vital_value": "vital_value", "messwert": "vital_value", "wert": "vital_value",
-    "lab_parameter": "lab_parameter", "labor_parameter": "lab_parameter", "analyt": "lab_parameter",
-    "lab_value": "lab_value", "labor_wert": "lab_value", "result": "lab_value",
-    "drug_name": "drug_name", "medikament": "drug_name", "arzneimittel": "drug_name",
-    "dose": "dose", "dosis": "dose", "unit": "unit", "einheit": "unit",
-    "nursing_note_free_text": "nursing_note_free_text", "pflegebericht": "nursing_note_free_text",
-    "movement_index_0_100": "movement_index_0_100", "fall_event_0_1": "fall_event_0_1"
-}
+    return "\n".join(lines)
 
-# ──────────────────────── Klinik-Manifest (DEINE LINKS) ────────────────────────
+def _call_claude_for_mapping(
+    dataframes: dict[str, pd.DataFrame],
+    model: str | None = None,
+) -> dict | None:
+    """Ask Claude to return a full column mapping for all dataframes."""
 
-BASE_URL = "https://raw.githubusercontent.com/adriank71/epaCC-START-Hack-2026/main/Endtestdaten_ohne_Fehler_einheitliche%20ID/split_data_pat_case_altered/split_data_pat_case_altered/"
+    api_key = os.getenv("ANTHROPIC_API_KEY")
+    if not api_key:
+        raise RuntimeError("ANTHROPIC_API_KEY not set")
 
-CLINIC_MANIFEST = []
-for i in range(1, 5):
-    clinic_id = f"clinic_{i}"
-    # Jeder Klinik-Satz besteht aus verschiedenen Dateien
-    CLINIC_MANIFEST.append({"source_clinic": clinic_id, "table_type": "vitals", "url": f"{BASE_URL}{clinic_id}_epaAC-Data.csv"})
-    CLINIC_MANIFEST.append({"source_clinic": clinic_id, "table_type": "labs", "url": f"{BASE_URL}{clinic_id}_labs.csv"})
-    CLINIC_MANIFEST.append({"source_clinic": clinic_id, "table_type": "medication", "url": f"{BASE_URL}{clinic_id}_medication.csv"})
-    CLINIC_MANIFEST.append({"source_clinic": clinic_id, "table_type": "nursing", "url": f"{BASE_URL}{clinic_id}_nursing.csv"})
-    CLINIC_MANIFEST.append({"source_clinic": clinic_id, "table_type": "device", "url": f"{BASE_URL}{clinic_id}_device.csv"})
+    client = anthropic.Anthropic(api_key=api_key)
+    prompt = _build_mapping_prompt(dataframes)
+    chosen_model = model or os.getenv("CLAUDE_MODEL", "claude-sonnet-4-5")
 
-# Sonderfall Klinik 4 (Excel & PDF)
-CLINIC_MANIFEST = [entry for entry in CLINIC_MANIFEST if not (entry["source_clinic"] == "clinic_4" and entry["table_type"] == "vitals")]
-CLINIC_MANIFEST.append({"source_clinic": "clinic_4", "table_type": "vitals", "url": f"{BASE_URL}clinic_4_epaAC-Data.xlsx"})
+    print("  Asking Claude to map all columns...")
 
-# ─────────────────────────── Pipeline-Logik ────────────────────────────────────
+    message = client.messages.create(
+        model=chosen_model,
+        max_tokens=8000,        # we need a lot of tokens - there are 500+ columns
+        temperature=0,
+        messages=[{"role": "user", "content": prompt}],
+    )
 
-def setup_logging():
-    logger = logging.getLogger("harmonizer")
-    logger.setLevel(LOG_LEVEL)
-    handler = logging.StreamHandler()
-    handler.setFormatter(logging.Formatter("%(asctime)s | %(levelname)s | %(message)s"))
-    logger.addHandler(handler)
-    return logger
+    # extract text
+    text = ""
+    for block in getattr(message, "content", []):
+        if getattr(block, "type", None) == "text":
+            text += getattr(block, "text", "")
+    text = text.strip()
 
-log = setup_logging()
+    # strip markdown if wrapped
+    if text.startswith("```"):
+        lines = text.splitlines()
+        text = "\n".join(lines[1:-1]).strip()
 
-def normalize_id(val):
-    if pd.isna(val) or str(val).strip() == "": return None
-    digits = re.sub(r"[^\d]", "", str(val))
-    return int(digits) if digits else None
-
-def process_file(entry, conn):
     try:
-        log.info(f"Verarbeite {entry['source_clinic']} - {entry['table_type']}...")
-        if entry['url'].endswith('.xlsx'):
-            df = pd.read_excel(entry['url'])
-        else:
-            df = pd.read_csv(entry['url'], dtype=str)
-        
-        # 1. Clean IDs
-        if 'case_id' in df.columns: df['case_id'] = df['case_id'].apply(normalize_id)
-        if 'patient_id' in df.columns: df['patient_id'] = df['patient_id'].apply(lambda x: str(x).strip() if pd.notna(x) else None)
-        
-        # 2. Drop rows without IDs
-        df = df.dropna(subset=['patient_id']) if 'patient_id' in df.columns else df
+        return json.loads(text)
+    except json.JSONDecodeError as e:
+        print(f"  Claude returned invalid JSON: {e}")
+        print(f"  Raw response: {text[:500]}")
+        return None
 
-        # 3. Simple Column Mapping
-        df.columns = [COLUMN_MAPPING.get(c.lower(), c) for c in df.columns]
 
-        # 4. Align to Schema
-        target_cols = TARGET_SCHEMAS.get(entry['table_type'], [])
-        for col in target_cols:
-            if col not in df.columns: df[col] = None
-        df['source_clinic'] = entry['source_clinic']
-        
-        # 5. Save to SQL
-        df[target_cols].to_sql(entry['table_type'], conn, if_exists='append', index=False)
-        return len(df)
-    except Exception as e:
-        log.error(f"Fehler bei {entry['source_clinic']}: {e}")
-        return 0
+# ─────────────────────────────────────────
+# Step 2 - Apply mapping to dataframes
+# ─────────────────────────────────────────
 
-def main():
-    conn = sqlite3.connect(DB_PATH)
-    # Tabellen initialisieren
-    for table, cols in TARGET_SCHEMAS.items():
-        pd.DataFrame(columns=cols).to_sql(table, conn, if_exists='replace', index=False)
-    
-    total_rows = 0
-    for entry in CLINIC_MANIFEST:
-        total_rows += process_file(entry, conn)
-    
+def _apply_mapping(
+    dataframes: dict[str, pd.DataFrame],
+    mapping: dict,
+) -> dict[str, pd.DataFrame]:
+    """
+    Rename columns according to Claude's mapping.
+    Drop columns mapped to null.
+    Add case_id / patient_id where Claude found them.
+    """
+    roles = mapping.get("dataframe_roles", {})
+    result = {}
+
+    for name, df in dataframes.items():
+        if name not in roles:
+            print(f"  [{name}] not in mapping - skipping")
+            continue
+
+        role_info = roles[name]
+        col_map: dict = role_info.get("column_mapping", {})
+
+        # build rename dict - skip nulls
+        rename = {
+            orig: canon
+            for orig, canon in col_map.items()
+            if canon is not None and orig in df.columns
+        }
+
+        # drop columns mapped to null
+        drop = [
+            orig for orig, canon in col_map.items()
+            if canon is None and orig in df.columns
+        ]
+
+        df = df.drop(columns=drop, errors="ignore")
+        df = df.rename(columns=rename)
+
+        # tag with source so we know where data came from
+        df["_source"] = name
+        df["_data_type"] = role_info.get("data_type", "unknown")
+
+        result[name] = df
+        print(f"  [{name}] mapped {len(rename)} columns, dropped {len(drop)}")
+
+    return result
+
+
+# ─────────────────────────────────────────
+# Step 3 - Merge everything by case_id
+# ─────────────────────────────────────────
+
+def _merge_by_case(
+    mapped_dfs: dict[str, pd.DataFrame],
+) -> pd.DataFrame:
+    """
+    Use cases as master table.
+    Merge everything else onto it by case_id or patient_id.
+    One-to-many tables (labs, medication etc) are kept as separate tables in DB.
+    """
+
+    # find the core cases table
+    master = None
+    for name, df in mapped_dfs.items():
+        if "case_id" in df.columns and "admission_date" in df.columns:
+            master = df.copy()
+            print(f"  Master table: [{name}] with {len(master)} cases")
+            break
+
+    if master is None:
+        # fallback - use first df with case_id
+        for name, df in mapped_dfs.items():
+            if "case_id" in df.columns:
+                master = df.copy()
+                print(f"  Fallback master: [{name}]")
+                break
+
+    if master is None:
+        raise RuntimeError("Could not find a master cases table with case_id")
+
+    return master
+
+
+# ─────────────────────────────────────────
+# Step 4 - Save to SQLite
+# ─────────────────────────────────────────
+
+def _save_to_db(
+    mapped_dfs: dict[str, pd.DataFrame],
+    db_path: str = "healthcare_unified.db",
+) -> None:
+    """
+    Save each dataframe as its own table in SQLite.
+    Tables are named by their data_type + source name.
+    """
+    conn = sqlite3.connect(db_path)
+
+    # group by data_type
+    type_counts: dict[str, int] = {}
+
+    for name, df in mapped_dfs.items():
+        # use the name directly as table name - clean it up
+        table_name = name.replace("-", "_").replace(" ", "_").lower()
+
+        df.to_sql(
+            table_name,
+            conn,
+            if_exists="replace",
+            index=False,
+        )
+
+        rows = len(df)
+        cols = len(df.columns)
+        print(f"  Saved [{table_name}] → {rows} rows, {cols} cols")
+
+        data_type = df["_data_type"].iloc[0] if "_data_type" in df.columns else "unknown"
+        type_counts[data_type] = type_counts.get(data_type, 0) + 1
+
+    # also save a unified view: cases + key fields joined
+    print("\n  Building unified_cases view...")
+    _save_unified_view(mapped_dfs, conn)
+
     conn.close()
-    print(f"\n✅ Fertig! {total_rows} Zeilen in '{DB_PATH}' gespeichert.")
+    print(f"\n  Database saved to: {db_path}")
+    print(f"  Table type summary: {type_counts}")
 
-if __name__ == "__main__":
-    main()
+
+def _save_unified_view(
+    mapped_dfs: dict[str, pd.DataFrame],
+    conn: sqlite3.Connection,
+) -> None:
+
+    # find master cases df
+    master = None
+    for name, df in mapped_dfs.items():
+        if "_data_type" in df.columns and df["_data_type"].iloc[0] == "core_cases":
+            master = df.copy()
+            break
+
+    if master is None:
+        print("  No core_cases table found for unified view")
+        return
+
+    if "case_id" not in master.columns:
+        print("  Master has no case_id - skipping unified view")
+        return
+
+    # ── FIX: force case_id to string everywhere ──
+    def normalize_case_id(df: pd.DataFrame) -> pd.DataFrame:
+        if "case_id" in df.columns:
+            df = df.copy()
+            df["case_id"] = df["case_id"].astype(str).str.strip()
+        return df
+
+    master = normalize_case_id(master)
+    unified = master.copy()
+
+    # merge epa assessments (one-to-one on case_id)
+    for name, df in mapped_dfs.items():
+        if "_data_type" not in df.columns:
+            continue
+        dtype = df["_data_type"].iloc[0]
+
+        if dtype == "epa_assessment" and "case_id" in df.columns:
+            df = normalize_case_id(df)
+            existing = set(unified.columns)
+            new_cols = [c for c in df.columns
+                       if c not in existing or c == "case_id"]
+            df_subset = df[new_cols].drop_duplicates(subset=["case_id"])
+            unified = unified.merge(df_subset, on="case_id", how="left")
+            print(f"    Merged epa [{name}] into unified view")
+
+    # for one-to-many: add summary count columns
+    for name, df in mapped_dfs.items():
+        if "_data_type" not in df.columns:
+            continue
+        dtype = df["_data_type"].iloc[0]
+
+        if dtype == "labs" and "case_id" in df.columns:
+            df = normalize_case_id(df)
+            lab_count = df.groupby("case_id").size().reset_index(name="lab_test_count")
+            unified = unified.merge(lab_count, on="case_id", how="left")
+            print(f"    Added lab count from [{name}]")
+
+        if dtype == "medication" and "case_id" in df.columns:
+            df = normalize_case_id(df)
+            med_count = df.groupby("case_id").size().reset_index(name="medication_count")
+            unified = unified.merge(med_count, on="case_id", how="left")
+            print(f"    Added medication count from [{name}]")
+
+        if dtype == "nursing" and "case_id" in df.columns:
+            df = normalize_case_id(df)
+            note_count = df.groupby("case_id").size().reset_index(name="nursing_note_count")
+            unified = unified.merge(note_count, on="case_id", how="left")
+            print(f"    Added nursing note count from [{name}]")
+
+    # defragment before saving
+    unified = unified.copy()
+
+    unified.to_sql("unified_cases", conn, if_exists="replace", index=False)
+    print(f"  unified_cases saved: {len(unified)} rows, {len(unified.columns)} cols")
+
+# ─────────────────────────────────────────
+# Main entry point
+# ─────────────────────────────────────────
+
+def unify(
+    dataframes: dict[str, pd.DataFrame],
+    db_path: str = "healthcare_unified.db",
+    model: str | None = None,
+) -> dict[str, pd.DataFrame]:
+    """
+    Main function. Takes raw dataframes, uses Claude to map columns,
+    merges by case_id, saves to SQLite.
+
+    Returns the mapped dataframes dict.
+    """
+
+    print("=" * 50)
+    print("HARMONIZER STARTING")
+    print(f"Input: {len(dataframes)} dataframes")
+    print("=" * 50)
+
+    # Step 1 - Claude maps all columns
+    print("\n[1/4] Calling Claude for column mapping...")
+    mapping = _call_claude_for_mapping(dataframes, model=model)
+
+    if mapping is None:
+        raise RuntimeError("Claude could not produce a mapping")
+
+    # optionally save mapping for inspection
+    with open("column_mapping.json", "w", encoding="utf-8") as f:
+        json.dump(mapping, f, indent=2, ensure_ascii=False)
+    print("  Mapping saved to column_mapping.json")
+
+    # Step 2 - apply mapping
+    print("\n[2/4] Applying column mapping...")
+    mapped_dfs = _apply_mapping(dataframes, mapping)
+
+    # Step 3 - build master
+    print("\n[3/4] Building master cases table...")
+    master = _merge_by_case(mapped_dfs)
+    print(f"  Master: {len(master)} cases, {len(master.columns)} columns")
+
+    # Step 4 - save to db
+    print("\n[4/4] Saving to database...")
+    _save_to_db(mapped_dfs, db_path=db_path)
+
+    print("\n" + "=" * 50)
+    print("HARMONIZER DONE")
+    print("=" * 50)
+
+    return mapped_dfs
