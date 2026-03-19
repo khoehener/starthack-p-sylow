@@ -1,6 +1,16 @@
 from data_reading_llm import read_file
 import os
-os.environ["ANTHROPIC_API_KEY"] = Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
+from anthropic import Anthropic
+from dotenv import load_dotenv
+
+# 1. Lädt die Variablen aus der .env-Datei in das System (os.environ)
+load_dotenv() 
+
+# 2. Den Key aus dem System auslesen
+api_key = os.getenv("ANTHROPIC_API_KEY")
+
+# 3. Den Client mit dem Key starten
+client = Anthropic(api_key=api_key)
 
 from data_reading_llm import read_file  # <- Name deiner .py Datei ohne .py
 
