@@ -1,6 +1,6 @@
 from data_reading_llm import read_file
 import os
-os.environ["ANTHROPIC_API_KEY"] = "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"  # dein echter Key
+os.environ["ANTHROPIC_API_KEY"] = Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
 
 from data_reading_llm import read_file  # <- Name deiner .py Datei ohne .py
 
