@@ -209,10 +209,6 @@ def _save_unified_view(
     mapped_dfs: dict[str, pd.DataFrame],
     conn: sqlite3.Connection,
 ) -> None:
-    """
-    Create one wide unified_cases table:
-    cases + one row per case with aggregated info from other tables.
-    """
 
     # find master cases df
     master = None
@@ -229,6 +225,14 @@ def _save_unified_view(
         print("  Master has no case_id - skipping unified view")
         return
 
+    # ── FIX: force case_id to string everywhere ──
+    def normalize_case_id(df: pd.DataFrame) -> pd.DataFrame:
+        if "case_id" in df.columns:
+            df = df.copy()
+            df["case_id"] = df["case_id"].astype(str).str.strip()
+        return df
+
+    master = normalize_case_id(master)
     unified = master.copy()
 
     # merge epa assessments (one-to-one on case_id)
@@ -238,7 +242,7 @@ def _save_unified_view(
         dtype = df["_data_type"].iloc[0]
 
         if dtype == "epa_assessment" and "case_id" in df.columns:
-            # drop columns already in unified to avoid duplicates
+            df = normalize_case_id(df)
             existing = set(unified.columns)
             new_cols = [c for c in df.columns
                        if c not in existing or c == "case_id"]
@@ -246,30 +250,35 @@ def _save_unified_view(
             unified = unified.merge(df_subset, on="case_id", how="left")
             print(f"    Merged epa [{name}] into unified view")
 
-    # for one-to-many tables: add summary columns
+    # for one-to-many: add summary count columns
     for name, df in mapped_dfs.items():
         if "_data_type" not in df.columns:
             continue
         dtype = df["_data_type"].iloc[0]
 
         if dtype == "labs" and "case_id" in df.columns:
+            df = normalize_case_id(df)
             lab_count = df.groupby("case_id").size().reset_index(name="lab_test_count")
             unified = unified.merge(lab_count, on="case_id", how="left")
             print(f"    Added lab count from [{name}]")
 
         if dtype == "medication" and "case_id" in df.columns:
+            df = normalize_case_id(df)
             med_count = df.groupby("case_id").size().reset_index(name="medication_count")
             unified = unified.merge(med_count, on="case_id", how="left")
             print(f"    Added medication count from [{name}]")
 
         if dtype == "nursing" and "case_id" in df.columns:
+            df = normalize_case_id(df)
             note_count = df.groupby("case_id").size().reset_index(name="nursing_note_count")
             unified = unified.merge(note_count, on="case_id", how="left")
             print(f"    Added nursing note count from [{name}]")
 
+    # defragment before saving
+    unified = unified.copy()
+
     unified.to_sql("unified_cases", conn, if_exists="replace", index=False)
     print(f"  unified_cases saved: {len(unified)} rows, {len(unified.columns)} cols")
-
 
 # ─────────────────────────────────────────
 # Main entry point
