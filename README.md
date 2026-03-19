@@ -37,63 +37,63 @@ bashCopyPYTHONPATH=src python main.py  # Mac/Linux
 4. View Results
 Open healthcare_unified.db with DB Browser for SQLite
 
-Architecture
-CopyRaw Files (CSV / Excel)
-        │
-        ▼
-┌───────────────────┐
-│   File Parser     │  Detects encoding, delimiter, structure
-│  (heuristics +    │  Falls back to Claude if ambiguous
-│   Claude AI)      │
-└───────────────────┘
-        │
-        ▼
-┌───────────────────┐
-│     Loader        │  Downloads files from URLs
-│  loader.py        │  Passes each to correct parser
-└───────────────────┘
-        │
-        ▼
-┌───────────────────┐
-│   Harmonizer      │  Sends all column names to Claude
-│  harmonizer.py    │  Claude maps everything to unified schema
-│                   │  Merges all data by case_id
-└───────────────────┘
-        │
-        ▼
-┌───────────────────┐
-│  SQLite Database  │  One table per data type
-│healthcare_unified │  + unified_cases: one row per patient
-│     .db           │
-└───────────────────┘
+## 🏗️ Architecture
 
-Project Structure
-Copystarthack-p-sylow/
-│
-├── main.py                          # Entry point - run this
-├── harmonizer.py                    # AI-powered data unification engine
-├── data_sources.py                  # All dataset URLs and names
-├── setup.py                         # Package setup and dependencies
-├── healthcare_unified.db            # Output database (generated)
-├── column_mapping.json              # Claude's mapping decisions (generated)
-├── .env                             # API keys (never commit this!)
-│
-└── src/
-    └── ingestion/
-        ├── loader.py                # Batch file downloader and loader
-        └── file_parser/
-            ├── models.py            # Data models (ReadResult, ParsingPlan etc.)
-            ├── detection.py         # Supported encodings and delimiters
-            ├── csv_reader.py        # Main CSV read orchestrator
-            ├── excel_reader.py      # Main Excel read orchestrator
-            ├── heuristics/
-            │   └── csv_heuristics.py    # Scoring-based CSV detection
-            ├── parsers/
-            │   ├── csv_parser.py        # Applies CSV parsing plan
-            │   └── excel_parser.py      # Applies Excel parsing plan
-            └── llm/
-                ├── claude_client.py     # Claude API client
-                └── profile_builder.py   # Builds file profiles for Claude
+    Raw Files (CSV / Excel)
+            │
+            ▼
+    ┌───────────────────┐
+    │   File Parser     │  Detects encoding, delimiter, structure
+    │  (heuristics +    │  Falls back to Claude if ambiguous
+    │   Claude AI)      │
+    └───────────────────┘
+            │
+            ▼
+    ┌───────────────────┐
+    │     Loader        │  Downloads files from URLs
+    │  loader.py        │  Passes each to correct parser
+    └───────────────────┘
+            │
+            ▼
+    ┌───────────────────┐
+    │   Harmonizer      │  Sends all column names to Claude
+    │  harmonizer.py    │  Claude maps everything to unified schema
+    └───────────────────┘
+            │
+            ▼
+    ┌───────────────────┐
+    │  SQLite Database  │  One table per data type
+    │  unified.db       │  + unified_cases: one row per patient
+    └───────────────────┘
+
+## Project Structure
+
+    starthack-p-sylow/
+    │
+    ├── main.py                      # Entry point - run this
+    ├── harmonizer.py                # AI-powered data unification engine
+    ├── data_sources.py              # All dataset URLs and names
+    ├── setup.py                     # Package setup and dependencies
+    ├── healthcare_unified.db        # Output database (generated)
+    ├── column_mapping.json          # Claude's mapping decisions (generated)
+    ├── .env                         # API keys (never commit this!)
+    │
+    └── src/
+        └── ingestion/
+            ├── loader.py            # Batch file downloader and loader
+            └── file_parser/
+                ├── models.py        # Data models
+                ├── csv_reader.py    # Main CSV read orchestrator
+                ├── excel_reader.py  # Main Excel read orchestrator
+                ├── heuristics/
+                │   └── csv_heuristics.py
+                ├── parsers/
+                │   ├── csv_parser.py
+                │   └── excel_parser.py
+                └── llm/
+                    ├── claude_client.py
+                    └── profile_builder.py
+                    
 Data Sources
 The pipeline handles three groups of datasets:
 Standard Datasets (DATASETS)
