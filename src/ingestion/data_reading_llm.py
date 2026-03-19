@@ -480,7 +480,7 @@ def _call_claude_for_parsing_plan(
 
 
 # -----------------------------
-# LLM nur bei unklaren Fällen fragen
+# LLM nur bei unklaren Fällen fragenn
 # -----------------------------
 def _csv_is_ambiguous(best_candidate: CsvCandidate | None, candidates: list[CsvCandidate]) -> bool:
     if best_candidate is None:
