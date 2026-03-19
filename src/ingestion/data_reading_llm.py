@@ -4,6 +4,7 @@ from dataclasses import dataclass, field
 from io import StringIO
 from pathlib import Path
 from typing import Any, Literal
+import base64
 import csv
 import json
 import os
@@ -13,7 +14,7 @@ import pandas as pd
 
 try:
     import anthropic
-except ImportError:  # pragma: no cover - optional dependency
+except ImportError:
     anthropic = None
 
 
@@ -68,9 +69,6 @@ def detect_file_type(file_path: str) -> str:
     return "unknown"
 
 
-# -----------------------------
-# Kleine allgemeine Hilfsfunktionen
-# -----------------------------
 def _safe_float(value: Any, default: float = 0.0) -> float:
     try:
         return float(value)
@@ -86,12 +84,6 @@ def _limit_text(text: str, max_len: int = 120) -> str:
 
 
 def _redact_value(value: Any) -> str:
-    """
-    Optionale leichte Redaktion für den LLM-Preview.
-    - Zahlenfolgen werden grob maskiert
-    - E-Mails werden maskiert
-    - Text wird gekürzt
-    """
     text = str(value)
     text = re.sub(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+", "<EMAIL>", text)
     text = re.sub(r"\b\d{3,}\b", "<NUM>", text)
@@ -131,9 +123,6 @@ def _delimiter_consistency_bonus(lines: list[str], delimiter: str) -> tuple[floa
     return bonus, f"Delimiter-Vorkommen Ø {avg:.1f}, Spread {spread}"
 
 
-# -----------------------------
-# CSV-Heuristiken
-# -----------------------------
 @dataclass
 class CsvCandidate:
     df: pd.DataFrame
@@ -146,10 +135,6 @@ class CsvCandidate:
 
 
 def _score_dataframe_shape(df: pd.DataFrame, expected_delimiter: str | None = None) -> tuple[float, str]:
-    """
-    Bewertet grob, wie plausibel ein DataFrame aussieht.
-    Höherer Score = wahrscheinlicher korrekt geparst.
-    """
     if df.empty:
         return -100.0, "DataFrame ist leer"
 
@@ -245,13 +230,17 @@ def _best_csv_candidate(file_path: str) -> tuple[CsvCandidate | None, list[CsvCa
     return candidates[0], candidates
 
 
-# -----------------------------
-# Excel-Heuristiken
-# -----------------------------
+@dataclass
+class ExcelSheetCandidate:
+    sheet_name: str
+    df: pd.DataFrame
+    score: float
+    reasoning: str
+
+
 def _score_excel_sheet(df: pd.DataFrame) -> tuple[float, str]:
     score, reasoning = _score_dataframe_shape(df)
 
-    # Spezieller Fall: eigentlich CSV-Text in einer Spalte
     if len(df.columns) == 1:
         first_col_name = str(df.columns[0])
         if any(delimiter in first_col_name for delimiter in SUPPORTED_DELIMITERS):
@@ -259,14 +248,6 @@ def _score_excel_sheet(df: pd.DataFrame) -> tuple[float, str]:
             reasoning += "; Single-Column-Sheet mit eingebettetem Delimiter entdeckt"
 
     return score, reasoning
-
-
-@dataclass
-class ExcelSheetCandidate:
-    sheet_name: str
-    df: pd.DataFrame
-    score: float
-    reasoning: str
 
 
 def _select_best_excel_sheet(file_path: str) -> tuple[list[str], ExcelSheetCandidate | None]:
@@ -289,9 +270,6 @@ def _select_best_excel_sheet(file_path: str) -> tuple[list[str], ExcelSheetCandi
     return sheet_names, best_candidate
 
 
-# -----------------------------
-# LLM-Vorschau / ParsingPlan via Claude
-# -----------------------------
 def _preview_csv_lines(file_path: str, max_lines: int = 12) -> dict[str, Any]:
     previews: dict[str, list[str]] = {}
 
@@ -479,9 +457,6 @@ def _call_claude_for_parsing_plan(
     )
 
 
-# -----------------------------
-# LLM nur bei unklaren Fällen fragen
-# -----------------------------
 def _csv_is_ambiguous(best_candidate: CsvCandidate | None, candidates: list[CsvCandidate]) -> bool:
     if best_candidate is None:
         return True
@@ -514,9 +489,6 @@ def _excel_is_ambiguous(best_sheet: ExcelSheetCandidate | None) -> bool:
     return False
 
 
-# -----------------------------
-# ParsingPlan anwenden
-# -----------------------------
 def _apply_csv_parsing_plan(file_path: str, plan: ParsingPlan) -> ReadResult:
     path = Path(file_path)
     issues: list[FileIssue] = []
@@ -710,9 +682,6 @@ def _apply_excel_parsing_plan(file_path: str, plan: ParsingPlan) -> ReadResult:
     )
 
 
-# -----------------------------
-# Öffentliche Reader-Funktionen
-# -----------------------------
 def read_csv_file(file_path: str) -> ReadResult:
     path = Path(file_path)
 
@@ -884,11 +853,95 @@ def read_excel_file(file_path: str) -> ReadResult:
 
 
 def read_pdf_file(file_path: str) -> ReadResult:
+    path = Path(file_path)
+
+    if not path.exists():
+        return ReadResult(
+            file_path=str(path),
+            file_type="pdf",
+            success=False,
+            issues=[FileIssue(severity="error", message="Datei existiert nicht.")],
+        )
+
+    if anthropic is None or not os.getenv("ANTHROPIC_API_KEY"):
+        return ReadResult(
+            file_path=str(path),
+            file_type="pdf",
+            success=False,
+            issues=[FileIssue(severity="error", message="Anthropic nicht verfügbar.")],
+        )
+
+    with open(file_path, "rb") as f:
+        pdf_data = base64.standard_b64encode(f.read()).decode("utf-8")
+
+    client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
+
+    message = client.messages.create(
+        model=os.getenv("CLAUDE_MODEL", "claude-sonnet-4-6"),
+        max_tokens=4096,
+        messages=[{
+            "role": "user",
+            "content": [
+                {
+                    "type": "document",
+                    "source": {
+                        "type": "base64",
+                        "media_type": "application/pdf",
+                        "data": pdf_data,
+                    },
+                },
+                {
+                    "type": "text",
+                    "text": (
+                        "Extrahiere alle Daten aus diesem PDF und gib sie als CSV zurück.\n"
+                        "Regeln:\n"
+                        "1. Erste Zeile = Header (Englisch, snake_case).\n"
+                        "2. Delimiter: Komma. Werte mit Kommas in Anführungszeichen.\n"
+                        "3. Alle Einträge in einer einzigen Tabelle.\n"
+                        "4. Nur reines CSV – kein Markdown, keine Erklärungen."
+                        "5. Erfinde keine Informationen.\n"
+                        "6. Wenn folgende Information vorhanden sind, sollen sie auf jeden Fall einbezogen werden:"
+                            "Patient-ID."
+                            "System-ID coId"
+                            "Birth of Date	coDateOfBirth	Format: DD.MM.YYYY"
+                            "Gender	coGender"
+                            "Age coAgeYears"
+                            "Begin of Care	coE2I223"
+                            "End of Care coE2I228"
+                            "Type of Stay coTypeOfStay"
+                            "Reclining Type	coRecliningType"
+                            "Medical Diagnose coIcd"
+                            "DRG Name	coDrgName"
+                            "State	coState"
+                            "Message: Really Short summary of possible message"
+                    ),
+                },
+            ],
+        }],
+    )
+
+    csv_text = _extract_text_from_claude_response(message)
+
+    csv_text = re.sub(r"```(?:csv)?\s*", "", csv_text, flags=re.IGNORECASE)
+    csv_text = re.sub(r"```", "", csv_text).strip()
+
+    try:
+        df = pd.read_csv(StringIO(csv_text), dtype=str)    
+    except Exception as exc:
+        return ReadResult(
+            file_path=str(path),
+            file_type="pdf",
+            success=False,
+            issues=[FileIssue(severity="error", message=f"CSV-Parsing fehlgeschlagen: {exc}")],
+        )
+
     return ReadResult(
-        file_path=file_path,
+        file_path=str(path),
         file_type="pdf",
-        success=False,
-        issues=[FileIssue(severity="warning", message="PDF-Parsing ist noch nicht implementiert.")],
+        success=True,
+        data=df,
+        issues=[FileIssue(severity="warning", message="PDF wurde via Claude extrahiert. Ergebnis prüfen.")],
+        metadata={"row_count": len(df), "columns": list(df.columns)},
     )
 
 
