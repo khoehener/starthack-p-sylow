@@ -15,55 +15,23 @@ import pandas as pd
 # ─────────────────────────────────────────
 
 def _build_mapping_prompt(dataframes: dict[str, pd.DataFrame]) -> str:
-    """Build a prompt that shows Claude all dataframes and their columns."""
-
     lines = [
         "You are a healthcare data integration expert.",
-        "I have the following dataframes that all relate to hospital patients and cases.",
-        "Your job is to:",
-        "1. Find which column in each dataframe represents the CASE ID and PATIENT ID",
-        "2. Map every column to a unified canonical name in English (snake_case)",
-        "3. Identify what TYPE of data each dataframe contains",
-        "",
-        "Here are the dataframes and their columns:",
+        "Map these dataframe columns to unified canonical snake_case English names.",
+        "Return ONLY valid JSON, no explanation.",
         "",
     ]
 
     for name, df in dataframes.items():
-        # send first 2 rows as sample so Claude understands the data
-        sample = df.head(2).to_dict(orient="records")
-        lines.append(f"=== {name} ===")
-        lines.append(f"Columns: {df.columns.tolist()}")
-        lines.append(f"Sample rows: {json.dumps(sample, default=str)}")
-        lines.append("")
+        lines.append(f"{name}: {df.columns.tolist()}")
 
     lines += [
-        "Return a JSON object with this exact structure:",
-        "{",
-        '  "dataframe_roles": {',
-        '    "<df_name>": {',
-        '      "case_id_column": "<column name or null>",',
-        '      "patient_id_column": "<column name or null>",',
-        '      "data_type": "<one of: core_cases, labs, medication, nursing, epa_assessment, motion, other>",',
-        '      "column_mapping": {',
-        '        "<original_column>": "<canonical_name>",',
-        '        ...',
-        "      }",
-        "    }",
-        "  }",
-        "}",
         "",
-        "Rules:",
-        "- canonical names must be snake_case English",
-        "- dates should map to names ending in _date or _datetime",
-        "- if a column is useless (Unnamed, base64 garbage) map it to null",
-        "- case_id and patient_id should always map to exactly 'case_id' and 'patient_id'",
-        "- be consistent: same concept = same canonical name across all dataframes",
-        "- only return valid JSON, no explanation",
+        "Return this exact JSON structure:",
+        '{"dataframe_roles": {"<df_name>": {"case_id_column": "<col or null>", "patient_id_column": "<col or null>", "data_type": "<core_cases|labs|medication|nursing|epa_assessment|motion|other>", "column_mapping": {"<original>": "<canonical or null>"}}}}',
     ]
 
     return "\n".join(lines)
-
 
 def _call_claude_for_mapping(
     dataframes: dict[str, pd.DataFrame],
