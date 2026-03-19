@@ -1,5 +1,7 @@
 import pandas as pd
 
+#Datenquellen ohne Fehler
+
 BASE_ROOT = "https://raw.githubusercontent.com/adriank71/epaCC-START-Hack-2026/main/Endtestdaten_ohne_Fehler_%20einheitliche%20ID/"
 
 DATASETS = {
@@ -56,4 +58,30 @@ DATASETS_CLINIC = {
     "clinic_4_medication": BASE_SPLIT + "clinic_4_medication.csv",
     # PDF handled separately
     "clinic_4_nursing_pdf": BASE_SPLIT + "clinic_4_nursing.pdf",
+}
+
+#Datenquellen mit Fehlern (für Testzwecke)
+
+BASE_ROOT_ERROR = "https://raw.githubusercontent.com/adriank71/epaCC-START-Hack-2026/main/Endtestdaten_mit_Fehler_ohne_%20einheitliche%20ID/"
+
+DATASETS_ERROR = {
+    "epa_3": BASE_ROOT_ERROR + "epaAC-Data-3.csv",
+
+    "cases_icd_ops_csv": BASE_ROOT_ERROR + "synth_cases_icd10_ops.csv",
+    "cases_icd_ops_xlsx": BASE_ROOT_ERROR + "synth_cases_icd10_ops.xlsx",
+
+    "device_motion_csv": BASE_ROOT_ERROR + "synth_device_motion_fall.csv",
+    "device_motion_xlsx": BASE_ROOT_ERROR + "synth_device_motion_fall.xlsx",
+
+    "device_raw_1hz_csv": BASE_ROOT_ERROR + "synth_device_raw_1hz_motion_fall.csv",
+    "device_raw_1hz_xlsx": BASE_ROOT_ERROR + "synth_device_raw_1hz_motion_fall.xlsx",
+
+    "labs_csv": BASE_ROOT_ERROR + "synth_labs.csv",
+    "labs_xlsx": BASE_ROOT_ERROR + "synth_labs.xlsx",
+
+    "medication_csv": BASE_ROOT_ERROR + "synth_medication_raw_inpatient.csv",
+    "medication_xlsx": BASE_ROOT_ERROR + "synth_medication_raw_inpatient.xlsx",
+
+    "nursing_csv": BASE_ROOT_ERROR + "synth_nursing_daily_reports.csv",
+    "nursing_xlsx": BASE_ROOT_ERROR + "synth_nursing_daily_reports.xlsx",
 }
